@@ -85,7 +85,7 @@ verdict key, so re-running an identical target is instant.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `VET_SKILL_LLM_URL` | `http://127.0.0.1:54706/v1/chat/completions` | OpenAI-compatible chat completions endpoint. The default is the **Gemini bridge** — a local-only LLM proxy (AiSupervisor local model stack, Gemini models on port 54706); it exists only if that stack is running |
+| `VET_SKILL_LLM_URL` | `http://127.0.0.1:54706/v1/chat/completions` | OpenAI-compatible chat completions endpoint. The default is the **browser-api Gemini provider** — a local-only LLM proxy (AiSupervisor local model stack, Gemini models on port 54706); it exists only if that stack is running |
 | `VET_SKILL_LLM_MODELS` | `gemini-3.5-flash-lite,gemini-3.6` | Comma-separated fallback model list |
 | `VET_SKILL_LLM_API_KEY` | *(unset)* | Sent as `Authorization: Bearer <key>` |
 | `VET_SKILL_LLM_TIMEOUT` | `30` | Seconds per LLM call |

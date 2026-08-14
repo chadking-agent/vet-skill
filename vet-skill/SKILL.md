@@ -98,7 +98,7 @@ All settings are environment variables (no config file):
 
 The default LLM URL points at a localhost port that may not exist on your
 machine — that's expected: if the endpoint is unreachable, `--with-llm` returns
-**HOLD** by design. The default endpoint is the **Gemini bridge** — a
+**HOLD** by design. The default endpoint is the **browser-api Gemini provider** — a
 local-only LLM proxy (part of the AiSupervisor local model stack, serving
 Gemini models on port 54706); it exists only if you run that stack. Set
 `VET_SKILL_LLM_URL` to your own endpoint otherwise (Ollama, LM Studio, a
