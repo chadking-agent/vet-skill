@@ -1,3 +1,28 @@
+## [1.3.1] — 2026-08-14
+
+- DDD round (fresh-context adversarial review, 10/14 findings applied, exploits
+  re-verified closed):
+  - **SSRF: initial URL target host is now vetted** — private/loopback/reserved
+    hosts refused before the first connect (was: only redirects were guarded)
+  - **Silent scan truncation fixed** — hitting the 200-file cap now emits a
+    severity-2 finding → HOLD (a payload sorted after 200 benign files used to PASS)
+  - **Doc severity capping no longer downgrades malware** — exec-class patterns
+    (os.system, curl|bash, reverse shells, persistence) keep their severity in
+    README/SKILL.md; only informational doc findings are capped at 1
+  - **Endpoint probe is a real HTTP POST now** — a bare TCP listener no longer
+    satisfies liveness, so cached LLM PASSes can't replay against a dead endpoint
+  - **NUL/binary executable files flagged** — NUL-padded .py/.sh payloads emit a
+    finding → HOLD instead of a silent skip
+  - **Dotfiles with executable extensions are scanned** — `.evil.sh` no longer
+    passes unseen (and the .env credential rule can fire again)
+  - Relative redirects resolved via urljoin before vetting (GitHub/CDN-style
+    `Location: /path` no longer hard-fails the fetch)
+  - LLM `content` arrays normalized (valid OpenAI format no longer → HOLD forever)
+  - LLM POST routed through the safe redirect handler
+  - `_extract_json_object` rewritten with `raw_decode` (braces inside string
+    values can no longer skew extraction)
+  - Dynamic-`Function` rule tightened to require a string argument (JS IIFEs no
+    longer false-positive)
 # Changelog
 
 All notable changes to vet-skill.

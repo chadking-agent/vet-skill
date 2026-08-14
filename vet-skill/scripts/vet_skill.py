@@ -73,7 +73,9 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     max_redirections = 3
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        from urllib.parse import urlparse
+        from urllib.parse import urljoin, urlparse
+        if not newurl.startswith(("http://", "https://")):
+            newurl = urljoin(req.full_url, newurl)
         old, new = urlparse(req.full_url), urlparse(newurl)
         if new.scheme not in ("http", "https"):
             return None
@@ -156,7 +158,7 @@ RULES = [
     (r"\b(shutdown|reboot|poweroff|mkfs)\b", 2, "system-destructive command"),
     # --- well-known secret names (env reads) ---
     (r"\b(GITHUB_TOKEN|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|AZURE_OPENAI_API_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY|GH_TOKEN|NPM_TOKEN|HF_TOKEN)\b", 2, "well-known secret environment variable"),
-    (r"\bnew\s+Function\s*\(|\bFunction\s*\(", 2, "dynamic code via Function constructor"),
+    (r"\bnew\s+Function\s*\(|\bFunction\s*\(\s*['\"`]", 2, "dynamic code via Function constructor"),
     # --- logic bombs ---
     (r"datetime\.now|time\.time\(|time\.sleep.*if|date\.today|utcnow", 1, "time/date reference (check intent)"),
     (r"if\s+.*(os\.getenv|platform\.|sys\.platform|environ).*:", 1, "environment-conditional logic"),
@@ -183,7 +185,7 @@ def _findings_for(text: str, rel: str, is_doc: bool) -> list[dict]:
         if not m:
             continue
         # doc content (READMEs, instructions) gets capped severity — install docs are legit
-        eff_sev = min(sev, 1) if is_doc else sev
+        eff_sev = min(sev, 1) if (is_doc and sev < 3) else sev  # exec-class keeps sev in docs
         line = text.count("\n", 0, m.start()) + 1
         snippet = text[max(0, m.start() - 60): m.end() + 60].replace("\n", " ")[:140]
         findings.append({"rule": label, "severity": eff_sev, "file": rel, "line": line, "snippet": snippet})
@@ -222,14 +224,22 @@ def _scan(target: Path) -> dict:
     if target.is_file():
         files = [target]
     else:
+        _truncated = False
         for p in sorted(target.rglob("*")):
-            if p.is_dir() or p.is_symlink() or p.name.startswith(".") or ".git" in p.parts:
+            if p.is_dir() or p.is_symlink() or ".git" in p.parts:
+                continue
+            if p.name.startswith(".") and p.suffix.lower() not in EXEC_EXTS:
                 continue
             files.append(p)
             if len(files) >= MAX_SCAN_FILES:
+                _truncated = True
                 break
 
     findings: list[dict] = []
+    if target.is_dir() and len(files) >= MAX_SCAN_FILES:
+        findings.append({"rule": "scan truncated at file cap — later files NOT scanned",
+                         "severity": 2, "file": "(dir)", "line": 0,
+                         "snippet": f"{MAX_SCAN_FILES} files scanned; payload may hide later"})
     scanned = []
     for f in files:
         rel = str(f.relative_to(target)) if target.is_dir() else f.name
@@ -266,6 +276,9 @@ def _scan(target: Path) -> dict:
                              "file": rel, "line": 0, "snippet": ""})
             continue
         if _is_binary(raw):
+            if f.suffix.lower() in EXEC_EXTS:
+                findings.append({"rule": "executable file contains NUL/binary bytes — content not scanned",
+                                 "severity": 2, "file": rel, "line": 0, "snippet": "binary/NUL-padded code"})
             continue  # binary content is not regex-scannable
         text = raw.decode("utf-8", errors="replace")
         is_doc = f.suffix.lower() in DOC_EXTS or f.name.lower() in ("sk.md", "readme.md")
@@ -387,15 +400,22 @@ def _maybe_extract(target: Path, workdir: Path) -> Path:
 
 
 def _endpoint_probe() -> bool:
-    """Cheap reachability probe of the configured LLM endpoint: a plain
-    TCP connect (no HTTP semantics — many OpenAI-compatible servers only
-    implement POST and would 405 or hang a GET)."""
+    """Reachability probe: a minimal POST chat request; only a 2xx counts as
+    alive (a bare TCP listener must NOT satisfy the probe, or a cached LLM
+    PASS would replay without a live review)."""
+    import urllib.error
     from urllib.parse import urlparse
     try:
-        u = urlparse(BRIDGE_URL)
-        port = u.port or (443 if u.scheme == "https" else 80)
-        with socket.create_connection((u.hostname or "localhost", port), timeout=5):
-            return True
+        body = json.dumps({"model": BRIDGE_MODELS[0],
+                           "messages": [{"role": "user", "content": "ping"}],
+                           "max_tokens": 1}).encode()
+        req = urllib.request.Request(BRIDGE_URL, data=body,
+                                     headers={"Content-Type": "application/json",
+                                              "User-Agent": f"vet-skill/{VERSION}"})
+        with urllib.request.build_opener(_SafeRedirectHandler()).open(req, timeout=5) as resp:
+            return resp.status in (200, 201, 202)
+    except urllib.error.HTTPError as e:
+        return e.code in (200, 201, 202)
     except Exception:
         return False
 
@@ -486,24 +506,23 @@ def _bundle_for_llm(target: Path) -> str:
 
 
 def _extract_json_object(content: str) -> dict | None:
-    """Scan a reply for the first balanced, parseable JSON object."""
-    start = content.find("{")
-    while start != -1:
-        depth = 0
-        for i in range(start, len(content)):
-            c = content[i]
-            if c == "{":
-                depth += 1
-            elif c == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        obj = json.loads(content[start:i + 1])
-                    except json.JSONDecodeError:
-                        break  # unbalanced/invalid — try the next '{'
-                    if isinstance(obj, dict):
-                        return obj
-        start = content.find("{", start + 1)
+    """Scan a reply for the first parseable JSON object, using raw_decode so
+    braces inside string values cannot skew the extraction."""
+    dec = json.JSONDecoder()
+    idx = 0
+    n = len(content)
+    while idx < n:
+        try:
+            obj, end = dec.raw_decode(content, idx)
+        except json.JSONDecodeError:
+            nxt = content.find("{", idx + 1)
+            if nxt == -1:
+                break
+            idx = nxt
+            continue
+        if isinstance(obj, dict):
+            return obj
+        idx = end
     return None
 
 
@@ -552,13 +571,16 @@ def _gemini_verdict(bundle: str, model: str = BRIDGE_MODELS[0]) -> dict:
     if LLM_API_KEY:
         headers["Authorization"] = f"Bearer {LLM_API_KEY}"
     req = urllib.request.Request(BRIDGE_URL, data=body, headers=headers)
-    with urllib.request.urlopen(req, timeout=LLM_TIMEOUT) as resp:
+    with urllib.request.build_opener(_SafeRedirectHandler()).open(req, timeout=LLM_TIMEOUT) as resp:
         raw = resp.read(1 << 20)  # 1 MiB cap on the LLM response
         if resp.read(1):
             raise ValueError("LLM response exceeds 1 MiB cap")
         data = json.loads(raw.decode())
     try:
         content = data["choices"][0]["message"]["content"]
+        if isinstance(content, list):
+            content = "\n".join(str(p.get("text") or p) if isinstance(p, dict) else str(p)
+                                 for p in content)
     except (KeyError, IndexError, TypeError) as e:
         raise ValueError(f"malformed LLM response: {e}") from e
     parsed = _extract_json_object(content)
@@ -621,6 +643,12 @@ def main() -> int:
     tmp = None
     target: Path
     if args.target.startswith(("http://", "https://")):
+        from urllib.parse import urlparse as _up
+        _u = _up(args.target)
+        if _is_private_host(_u.hostname or ""):
+            print(json.dumps({"error": "fetch failed: refusing private/loopback/reserved host "
+                                       f"{_u.hostname!r} (SSRF guard)"}))
+            return 1
         tmp = Path(tempfile.mkdtemp(prefix="vet-skill-"))
         try:
             req = urllib.request.Request(
