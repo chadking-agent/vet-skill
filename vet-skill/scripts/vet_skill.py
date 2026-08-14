@@ -34,7 +34,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 
 
 def _is_private_ip(ip) -> bool:
