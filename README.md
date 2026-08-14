@@ -19,9 +19,13 @@ skill's files that flag:
 - Download-execute: `curl|bash`, `wget|sh`, fetching executables to disk
 - Obfuscation: base64/hex decode chains, `zlib`/`marshal`/`pickle` payloads, `chr()` chains
 - Network: raw IP URLs, shorteners, webhook sinks, paste/raw hosts
-- Secrets: env reads, Keychain access, credential files
+- Secrets: env reads, Keychain access, credential files, well-known secret names
 - Persistence: crontab/launchd/systemd, shell-profile writes, sudo
-- Deception: prompt-injection markers, hidden instructions, zero-width unicode, tool shadowing
+- Deception: prompt-injection markers, LLM system-prompt injection (`<<SYS>>`,
+  `<|im_start|>`, instruction overrides), zero-width unicode, tool shadowing
+- Reverse shells / C2: `/dev/tcp`, `mkfifo`, `nc -e`, `pty.spawn`, PowerShell
+  `-EncodedCommand`, `certutil -decode`
+- Destructive commands: `--no-preserve-root`, `rm -rf /`, shutdown/reboot/mkfs
 - Logic bombs: time/date or environment-conditional payloads
 
 Doc files (READMEs, `.md`) are informational only — their findings are capped
@@ -32,9 +36,11 @@ opinion gate installs.
 the skill's content (capped ~24 KB) and sends it to an OpenAI-compatible
 endpoint in fresh chats — it calls each configured model in order until one
 succeeds (up to one call per model) — asking for a structured PASS/HOLD/BLOCK
-verdict plus reasons. If the endpoint is unreachable and the static layer is
-clean, the verdict falls to **HOLD** — never auto-PASS without the second
-opinion. Static BLOCK stands regardless.
+verdict plus reasons. The bundle is framed as **untrusted data** and the model
+is told to ignore any instructions inside it, so skill content can't hijack the
+reviewer. If the endpoint is unreachable and the static layer is clean, the
+verdict falls to **HOLD** — never auto-PASS without the second opinion. Static
+BLOCK stands regardless.
 
 ## Requirements
 
@@ -60,8 +66,8 @@ python3 vet_skill.py ~/Downloads/some-skill
 # static + LLM second opinion
 python3 vet_skill.py https://example.com/skill.zip --with-llm
 
-# machine-readable report
-python3 vet_skill.py ~/Downloads/some-skill --with-llm --json
+# machine-readable report, ignore cache
+python3 vet_skill.py ~/Downloads/some-skill --with-llm --json --no-cache
 ```
 
 | Exit | Meaning |
@@ -83,7 +89,8 @@ verdict key, so re-running an identical target is instant.
 | `VET_SKILL_LLM_MODELS` | `gemini-3.5-flash-lite,gemini-3.6` | Comma-separated fallback model list |
 | `VET_SKILL_LLM_API_KEY` | *(unset)* | Sent as `Authorization: Bearer <key>` |
 | `VET_SKILL_LLM_TIMEOUT` | `30` | Seconds per LLM call |
-| `VET_SKILL_CACHE_DIR` | `~/.cache/vet-skill` | Verdict cache directory |
+| `VET_SKILL_LLM_ALLOW_INSECURE` | *(unset)* | Set `1` to allow `--with-llm` against a public `http://` endpoint. Without it, the tool **refuses** to send skill content over public cleartext HTTP (loopback/private-network HTTP is always allowed) |
+| `VET_SKILL_CACHE_DIR` | `~/.cache/vet-skill` | Verdict cache directory (created 0700; cache files 0600) |
 
 Example against a public provider:
 
@@ -97,15 +104,19 @@ python3 vet_skill.py ./suspect-skill --with-llm
 ## Watch-outs
 
 - **Content is sent to whatever `VET_SKILL_LLM_URL` points at — verbatim.**
-  The default is localhost-only by design. Never point it at a public/cloud
-  endpoint if the skill under review is confidential, and always use HTTPS
-  for remote endpoints.
+  The default is localhost-only by design. The tool **refuses** `--with-llm`
+  against a public `http://` endpoint to prevent shipping skill content over
+  cleartext to the public internet (set `VET_SKILL_LLM_ALLOW_INSECURE=1` to
+  override). Never point it at a public/cloud endpoint if the skill under
+  review is confidential, and always use HTTPS for remote endpoints.
+- **Malicious archives** (zip-slip, symlink members, tar bombs) are rejected
+  before extraction — the verdict is ERROR, never a silent PASS.
 - Vet everything, including "official-looking" sources. Never install a
   BLOCKed skill in any form.
 - The static scan is heuristic, not a malware sandbox — manually review
   HOLDs.
 - Cache stores scan content in plaintext; point `VET_SKILL_CACHE_DIR` at a
-  location you don't mind persisting.
+  location you don't mind persisting (cache dir is mode 0700, files 0600).
 - Multi-file skills are sent to the LLM as a per-file summary (~24 KB cap),
   not every byte.
 

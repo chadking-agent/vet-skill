@@ -1,7 +1,7 @@
 ---
 name: vet-skill
 description: "Vet third-party skills before install: static scan + local LLM second opinion."
-version: 1.2.2
+version: 1.3.0
 author: Chad King
 license: MIT
 platforms: [linux, macos, windows]
@@ -33,8 +33,9 @@ review from a local LLM endpoint (exactly one fresh chat).
 
    `<install-dir>` is the folder the skill was copied into — on a default
    Hermes install that's `~/.hermes/skills/operations/vet-skill`. Add `--json`
-   for machine-readable output. Exit codes: `0` PASS, `1` ERROR (input failed
-   to fetch/parse), `2` HOLD, `3` BLOCK. Without `--with-llm`, PASS means
+   for machine-readable output and `--no-cache` to force a fresh scan (ignore
+   the verdict cache). Exit codes: `0` PASS, `1` ERROR (input failed to
+   fetch/parse/extract), `2` HOLD, `3` BLOCK. Without `--with-llm`, PASS means
    **static-clean only** — the operator still decides whether a second opinion
    is required.
 
@@ -55,7 +56,12 @@ review from a local LLM endpoint (exactly one fresh chat).
 - Network: raw IP URLs, shorteners (opaque destination), webhook sinks, paste/raw hosts
 - Secrets: env reads, Keychain access, credential files, secret-like assignments
 - Persistence: crontab/launchd/systemd, shell-profile writes, sudo
-- Deception: prompt-injection markers, hidden instructions, zero-width unicode, tool shadowing
+- Deception: prompt-injection markers, LLM system-prompt injection (`<<SYS>>`,
+  `<|im_start|>`, "override your instructions"), hidden instructions, zero-width
+  unicode, social-engineering/trust markers, tool shadowing
+- Reverse shells & C2: `/dev/tcp`, `mkfifo`, `nc -e`, `pty.spawn`, PowerShell
+  `-EncodedCommand`/`Invoke-Expression`, `certutil -decode`
+- Destructive commands: `--no-preserve-root`, `rm -rf /`, `dd`, shutdown/reboot
 - Logic bombs: time/date or environment-conditional payloads
 
 Doc files (READMEs, .md) are informational only — their findings are capped at
@@ -87,7 +93,8 @@ All settings are environment variables (no config file):
 | `VET_SKILL_LLM_MODELS` | `gemini-3.5-flash-lite,gemini-3.6` | Comma-separated model list (fallback order) |
 | `VET_SKILL_LLM_API_KEY` | *(unset)* | Added as `Authorization: Bearer <key>` on LLM calls |
 | `VET_SKILL_LLM_TIMEOUT` | `30` | Seconds to wait per LLM call |
-| `VET_SKILL_CACHE_DIR` | `~/.cache/vet-skill` | Verdict cache location |
+| `VET_SKILL_LLM_ALLOW_INSECURE` | *(unset)* | Set to `1` to permit `--with-llm` against a public `http://` endpoint (off by default — skill content must not cross the wire in cleartext to a public host) |
+| `VET_SKILL_CACHE_DIR` | `~/.cache/vet-skill` | Verdict cache location (dir created mode 0700, files 0600) |
 
 The default LLM URL points at a localhost port that may not exist on your
 machine — that's expected: if the endpoint is unreachable, `--with-llm` returns
@@ -109,8 +116,11 @@ remote endpoints), `VET_SKILL_LLM_MODELS` to a model it serves, and
 - Keep the bundle size sane: the scanner caps what it sends to the LLM (~24 KB),
   so multi-file skills are reviewed as a summary of their files, not every byte.
 - Never send skill content to public/cloud LLMs by default — the default
-  endpoint is local. If you point `VET_SKILL_LLM_URL` elsewhere, you are
-  sending skill content there; choose the endpoint accordingly.
+  endpoint is local. The tool refuses a public `http://` endpoint outright
+  (`VET_SKILL_LLM_ALLOW_INSECURE=1` overrides); anything else must be HTTPS.
+- If a skill scans as empty (no scannable files) or the archive is malicious
+  (path-traversal, symlink, or bomb members), the verdict is HOLD or ERROR —
+  never a quiet PASS.
 
 ## Verification
 

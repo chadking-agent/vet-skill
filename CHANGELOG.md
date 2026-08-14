@@ -2,6 +2,43 @@
 
 All notable changes to vet-skill.
 
+## [1.3.0] — 2026-08-14
+
+- Security-hardening + robustness round:
+  - **LLM prompt-injection defense:** the skill bundle is now framed as
+    untrusted data between explicit markers, the model is instructed to ignore
+    any instructions inside the content and to report manipulation attempts in
+    `suspicious` — skill content can no longer hijack the reviewer.
+  - **New static rules:** LLM system-prompt injection markers (`<<SYS>>`,
+    `<|im_start|>`, `[system]`, instruction overrides), reverse/bind shells
+    (`/dev/tcp`, `mkfifo`, `nc -e`, `pty.spawn`), PowerShell
+    `-EncodedCommand`/`Invoke-Expression`, `certutil -decode`, base64-piped
+    download-execute, destructive commands (`--no-preserve-root`, `rm -rf /`,
+    `dd`, shutdown/reboot/mkfs), well-known secret env names, social-engineering
+    trust markers, dynamic `Function()`.
+  - **Cleartext-exfiltration guard:** `--with-llm` refuses a public `http://`
+    endpoint (loopback/private HTTP still allowed) unless
+    `VET_SKILL_LLM_ALLOW_INSECURE=1` is set.
+  - **Archive hardening:** zip members are now checked for drive-letter
+    escapes and symlink entries and extracted member-by-member (never through
+    `extractall`); tar members additionally reject device files; both formats
+    enforce a 50 MiB extracted-content cap and 2000-member cap (bomb guard)
+    plus a resolved-path containment check. Extension-less archives are
+    detected by magic bytes.
+  - **Symlink hygiene:** recursive scan/hash/bundle walks skip symlinks so a
+    skill can't pull in content from outside the target tree.
+  - **Fail-closed:** a target that yields zero scannable files is HOLD, not a
+    silent PASS.
+  - **Robust LLM parsing:** balanced-brace JSON extraction (nested objects,
+    prose, fences), response size-truncation detection, and coerce/cap of
+    `reasons`/`suspicious`.
+  - **Cache hygiene:** cache dir created mode 0700, cache files mode 0600;
+    `--no-cache` flag forces a fresh scan. Cache-hit reporting now truthfully
+    marks a dead-endpoint replay as not-LLM-reviewed.
+  - **Bug fixes:** archive extraction failures now produce a clean ERROR exit
+    (previously an unhandled traceback that leaked the temp dir); `--version`
+    flag added; URL fetches send a User-Agent.
+
 ## [1.1.0] — 2026-08-13
 
 - Public-release hardening:
