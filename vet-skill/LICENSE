@@ -24,19 +24,9 @@ SOFTWARE.
 
 ## Acknowledgments
 
-The learning-loop concept — log mistakes, dedupe by key, promote recurring
-patterns — draws inspiration from the self-improving-agent approach shared
-in the open-source community (e.g.
-[pskoett/self-improving-agent](https://github.com/pskoett/self-improving-agent)).
-This repository is an independent implementation: no upstream code, wording,
-or assets are included, and this MIT license covers all original
-contributions.
+This skill is an independent implementation written for the Hermes agent
+ecosystem. No upstream code, wording, or assets are included; this MIT
+license covers all original contributions.
 
-Learnings users generate with this skill are their own data and are not
-covered by this repository's license.
-
-## Acknowledgments
-
-This skill is an independent implementation written for the Hermes agent ecosystem.
-
-Learnings and scan results generated with this skill are the user's own data and are not covered by this repository's license.
+Scan results and data generated with this skill are the user's own data and
+are not covered by this repository's license.

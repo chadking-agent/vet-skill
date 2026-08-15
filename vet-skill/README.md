@@ -133,10 +133,12 @@ python3 vet_skill.py ./suspect-skill --with-llm
 MIT — see [LICENSE](LICENSE). This is an independent implementation, written
 for the Hermes agent ecosystem. Changelog: [CHANGELOG.md](CHANGELOG.md).
 
-- **Self-scan:** running vet-skill on its own repo skips the script itself — its
-  detection patterns are literal strings in the source, so it cannot vet itself.
-  The repo's own docs (README/SKILL.md/CHANGELOG) enumerate the exact patterns
-  the scanner looks for (`/dev/tcp`, `curl|bash`, `rm -rf /`, …), so they are
-  flagged by design — a self-scan of the full repo returns **HOLD/BLOCK**, which
-  is correct, not a bug. Scan a clean skill directory (or run the test suite) to
-  verify the tool end-to-end.
+## Self-scan note
+
+Running vet-skill on its own repo skips the script itself — its detection
+patterns are literal strings in the source, so it cannot vet itself. The
+repo's own docs (README/SKILL.md/CHANGELOG) enumerate the exact patterns the
+scanner looks for (`/dev/tcp`, `curl|bash`, `rm -rf /`, …), so they are
+flagged by design — a self-scan of the full repo returns HOLD/BLOCK, which is
+correct, not a bug. Scan a clean skill directory (or run the test suite) to
+verify the tool end-to-end.
