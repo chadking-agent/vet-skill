@@ -1,0 +1,6 @@
+#!/bin/sh
+# publish-hygiene pre-push hook: run the guard before anything reaches GitHub
+python3 ~/.hermes/scripts/publish_guard.py "$(pwd)" || {
+  echo "PUBLISH GUARD FAILED — push blocked. Fix violations or override explicitly."
+  exit 1
+}
