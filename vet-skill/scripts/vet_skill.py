@@ -34,7 +34,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 
 
 def _is_private_ip(ip) -> bool:
@@ -85,6 +85,23 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
             return None  # refuse redirects into loopback/private space
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
+
+def _download(url: str, dest: Path) -> None:
+    """Fetch url into dest with a hard 2 MiB cap. Raises ValueError when the
+    body exceeds the cap. Reads are chunked (1 MiB) so memory stays bounded."""
+    req = urllib.request.Request(url, headers={"User-Agent": f"vet-skill/{VERSION}"})
+    with urllib.request.build_opener(_SafeRedirectHandler()).open(req, timeout=30) as resp:
+        data = bytearray()
+        while True:
+            chunk = resp.read(1 << 20)
+            if not chunk:
+                break
+            data.extend(chunk)
+            if len(data) > (2 << 20):
+                raise ValueError("download exceeds 2 MiB cap")
+        dest.write_bytes(bytes(data))
+
+
 BRIDGE_URL = os.environ.get("VET_SKILL_LLM_URL", "http://127.0.0.1:54706/v1/chat/completions")
 BRIDGE_MODELS = [m.strip() for m in os.environ.get("VET_SKILL_LLM_MODELS", "gemini-3.5-flash-lite,gemini-3.6").split(",") if m.strip()] or ["gemini-3.5-flash-lite", "gemini-3.6"]
 CACHE_DIR = Path(os.environ.get("VET_SKILL_CACHE_DIR", str(Path.home() / ".cache" / "vet-skill"))).expanduser()
@@ -124,7 +141,7 @@ RULES = [
     # --- network / exfil ---
     (r"requests\.(get|post|put|delete|patch)|urllib\.(request|parse)|httpx\.|aiohttp|socket\.(socket|create_connection)", 2, "network call"),
     (r"https?://(bit\.ly|tinyurl\.com|t\.co|is\.gd|cutt\.ly|rb\.gy|shorturl\.at|goo\.gl|buff\.ly)/", 3, "URL shortener (opaque destination)"),
-    (r"https?://\d{1,3}(\.\d{1,3}){3}(:\d+)?", 3, "raw IP address URL"),
+    (r"https?://(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(?::\d+)?", 3, "raw IP address URL"),
     (r"pastebin\.com|gist\.githubusercontent|raw\.githubusercontent\.com/.*/.*/.*/.*", 1, "paste/raw content source"),
     (r"webhook\.site|requestbin|pipedream|hookbin|beeceptor", 3, "webhook sink (possible exfil)"),
     # --- secrets / credentials ---
@@ -208,6 +225,19 @@ def _shadow_check(skill_dir: Path) -> list[dict]:
                         "file": str(skill_dir), "line": 0, "snippet": f"skill dir named '{name}'"})
     except Exception:
         pass
+    # A skill can also declare its tool name in SKILL.md frontmatter; an
+    # attacker could name a plausible skill after a built-in command.
+    try:
+        sk = skill_dir if skill_dir.is_file() else skill_dir / "SKILL.md"
+        if sk.is_file():
+            head = sk.read_text(encoding="utf-8", errors="replace")[:2000]
+            m = re.search(r"(?im)^name\s*:\s*[\"']?([\w.-]+)[\"']?\s*$", head)
+            if m and m.group(1).lower() in SHADOW_CMDS:
+                out.append({"rule": "tool shadowing: SKILL.md name matches built-in command",
+                            "severity": 2, "file": str(sk), "line": 0,
+                            "snippet": f"declared skill name '{m.group(1)}'"})
+    except Exception:
+        pass
     return out
 
 
@@ -281,7 +311,7 @@ def _scan(target: Path) -> dict:
                                  "severity": 2, "file": rel, "line": 0, "snippet": "binary/NUL-padded code"})
             continue  # binary content is not regex-scannable
         text = raw.decode("utf-8", errors="replace")
-        is_doc = f.suffix.lower() in DOC_EXTS or f.name.lower() in ("sk.md", "readme.md")
+        is_doc = f.suffix.lower() in DOC_EXTS or f.name.lower() in ("skill.md", "readme.md")
         scanned.append(rel)
         findings.extend(_findings_for(text, rel, is_doc))
 
@@ -405,13 +435,14 @@ def _endpoint_probe() -> bool:
     PASS would replay without a live review)."""
     import urllib.error
     from urllib.parse import urlparse
+    headers = {"Content-Type": "application/json", "User-Agent": f"vet-skill/{VERSION}"}
+    if LLM_API_KEY:
+        headers["Authorization"] = f"Bearer {LLM_API_KEY}"
     try:
         body = json.dumps({"model": BRIDGE_MODELS[0],
                            "messages": [{"role": "user", "content": "ping"}],
                            "max_tokens": 1}).encode()
-        req = urllib.request.Request(BRIDGE_URL, data=body,
-                                     headers={"Content-Type": "application/json",
-                                              "User-Agent": f"vet-skill/{VERSION}"})
+        req = urllib.request.Request(BRIDGE_URL, data=body, headers=headers)
         with urllib.request.build_opener(_SafeRedirectHandler()).open(req, timeout=5) as resp:
             return resp.status in (200, 201, 202)
     except urllib.error.HTTPError as e:
@@ -463,8 +494,10 @@ def _content_hash(target: Path) -> str:
     else:
         hashed = 0
         for p in sorted(target.rglob("*")):
-            if p.is_dir() or p.is_symlink() or p.name.startswith(".") or ".git" in p.parts:
+            if p.is_dir() or p.is_symlink() or ".git" in p.parts:
                 continue
+            if p.name.startswith(".") and p.suffix.lower() not in EXEC_EXTS:
+                continue  # match _scan(): exec-ext dotfiles (.evil.sh) ARE scanned
             try:
                 with open(p, "rb") as fh:
                     h.update(fh.read(MAX_FILE_BYTES))
@@ -493,8 +526,10 @@ def _bundle_for_llm(target: Path) -> str:
             parts.append(f"=== SKILL.md ===\n{head}")
             budget -= len(head)
         for p in sorted(target.rglob("*")):
-            if p.is_dir() or p.is_symlink() or p.name.startswith(".") or ".git" in p.parts:
+            if p.is_dir() or p.is_symlink() or ".git" in p.parts:
                 continue
+            if p.name.startswith(".") and p.suffix.lower() not in EXEC_EXTS:
+                continue  # match _scan(): exec-ext dotfiles (.evil.sh) reach the LLM
             if budget <= 0:
                 break
             head = _read_head(p, min(6000, budget))
@@ -622,7 +657,16 @@ def _verdict_from(score: int, findings: list[dict], llm: dict | None,
     return "PASS"
 
 
-def main() -> int:
+def _fail(message: str, as_json: bool) -> int:
+    """Print an error in the requested format and return the ERROR exit code."""
+    if as_json:
+        print(json.dumps({"error": message}))
+    else:
+        print(f"Error: {message}")
+    return 1
+
+
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Vet a third-party skill for safety.")
     ap.add_argument("target", help="path to skill dir/file or http(s) URL")
     ap.add_argument("--with-llm", action="store_true", help="also ask the local LLM bridge (1 call)")
@@ -630,15 +674,13 @@ def main() -> int:
     ap.add_argument("--no-cache", action="store_true",
                     help="ignore any cached verdict and force a fresh scan/LLM call")
     ap.add_argument("--version", action="version", version=f"vet-skill {VERSION}")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if args.with_llm and _llm_endpoint_sends_content_cleartext():
-        print(json.dumps({
-            "error": "refusing to send skill content over public cleartext HTTP to "
-                     f"{BRIDGE_URL}; use an https:// VET_SKILL_LLM_URL or set "
-                     "VET_SKILL_LLM_ALLOW_INSECURE=1 to override"
-        }))
-        return 1
+        return _fail(
+            "refusing to send skill content over public cleartext HTTP to "
+            f"{BRIDGE_URL}; use an https:// VET_SKILL_LLM_URL or set "
+            "VET_SKILL_LLM_ALLOW_INSECURE=1 to override", args.json)
 
     tmp = None
     target: Path
@@ -646,41 +688,25 @@ def main() -> int:
         from urllib.parse import urlparse as _up
         _u = _up(args.target)
         if _is_private_host(_u.hostname or ""):
-            print(json.dumps({"error": "fetch failed: refusing private/loopback/reserved host "
-                                       f"{_u.hostname!r} (SSRF guard)"}))
-            return 1
+            return _fail(f"fetch failed: refusing private/loopback/reserved host "
+                         f"{_u.hostname!r} (SSRF guard)", args.json)
         tmp = Path(tempfile.mkdtemp(prefix="vet-skill-"))
         try:
-            req = urllib.request.Request(
-                args.target,
-                headers={"User-Agent": f"vet-skill/{VERSION}"})
-            with urllib.request.build_opener(_SafeRedirectHandler()).open(req, timeout=30) as resp:
-                from urllib.parse import urlparse
-                raw_name = urlparse(args.target).path.rstrip("/").split("/")[-1] or "SKILL.md"
-                # Path-traversal guard: only a bare basename may be used.
-                name = Path(raw_name).name
-                if not name or name in (".", ".."):
-                    name = "SKILL.md"
-                chunk = resp.read(1 << 20)  # 1 MiB cap per chunk, 2 MiB total
-                data = bytearray(chunk)
-                while len(data) < (2 << 20):
-                    chunk = resp.read(1 << 20)
-                    if not chunk:
-                        break
-                    data.extend(chunk)
-                if len(data) > (2 << 20):  # strictly over the cap
-                    raise ValueError("download exceeds 2 MiB cap")
-                (tmp / name).write_bytes(bytes(data))
+            from urllib.parse import urlparse
+            raw_name = urlparse(args.target).path.rstrip("/").split("/")[-1] or "SKILL.md"
+            # Path-traversal guard: only a bare basename may be used.
+            name = Path(raw_name).name
+            if not name or name in (".", ".."):
+                name = "SKILL.md"
+            _download(args.target, tmp / name)
             target = tmp / name  # single-file target, same branch as local files
         except Exception as e:
             shutil.rmtree(tmp, ignore_errors=True)  # never leak temp dirs
-            print(json.dumps({"error": f"fetch failed: {e}"}))
-            return 1
+            return _fail(f"fetch failed: {e}", args.json)
     else:
         target = Path(args.target).expanduser()
         if not target.exists():
-            print(json.dumps({"error": f"path not found: {target}"}))
-            return 1
+            return _fail(f"path not found: {target}", args.json)
 
     # archive targets (URL-downloaded or local) get extracted before scanning;
     # sniff magic bytes too so an extension-less zip/tar is still handled
@@ -692,8 +718,7 @@ def main() -> int:
             target = _maybe_extract(target, tmp)
         except Exception as e:
             shutil.rmtree(tmp, ignore_errors=True)
-            print(json.dumps({"error": str(e)}))
-            return 1
+            return _fail(str(e), args.json)
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     try:
@@ -734,8 +759,11 @@ def main() -> int:
             # reachable now; otherwise HOLD with the cached evidence noted.
             _probe_ok = _endpoint_probe()
         # Never trust a stored verdict: re-derive it from the stored evidence.
+        # Match the fresh-path gating — a static-only run is PASS-capable on
+        # cache hits too (previously `bridge_ok and _probe_ok` forced HOLD).
         verdict = _verdict_from(static["score"], static["findings"],
-                                llm if _probe_ok else None, bridge_ok and _probe_ok,
+                                llm if _probe_ok else None,
+                                (bridge_ok and _probe_ok) or not llm_required,
                                 len(static["scanned"]))
         if not _probe_ok:
             verdict = "HOLD"
@@ -760,12 +788,17 @@ def main() -> int:
         cached_hit = False
         if not args.no_cache:
             try:
-                cache_file.write_text(json.dumps({
+                payload = json.dumps({
                     "version": SCHEMA_VERSION, "target_hash": h, "static": static, "llm": llm,
                     "bridge_ok": bridge_ok, "verdict": verdict,
                     "created_at": time.time(),
-                }))
-                os.chmod(cache_file, 0o600)
+                })
+                # Atomic write (temp + rename) so a concurrent or crashed run
+                # never reads a torn cache entry.
+                tmp_path = cache_file.with_name(cache_file.name + ".tmp")
+                tmp_path.write_text(payload)
+                os.chmod(tmp_path, 0o600)
+                os.replace(tmp_path, cache_file)
             except Exception:
                 pass
 

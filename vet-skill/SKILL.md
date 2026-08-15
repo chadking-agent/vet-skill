@@ -1,7 +1,7 @@
 ---
 name: vet-skill
 description: "Vet third-party skills before install: static scan + local LLM second opinion."
-version: 1.3.1
+version: 1.3.2
 author: Chad King
 license: MIT
 platforms: [linux, macos, windows]
