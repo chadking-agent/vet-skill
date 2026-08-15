@@ -125,4 +125,8 @@ python3 vet_skill.py ./suspect-skill --with-llm
 MIT — see [LICENSE](LICENSE). This is an independent implementation, written
 for the Hermes agent ecosystem. Changelog: [CHANGELOG.md](CHANGELOG.md).
 
-- **Self-scan:** running vet-skill on its own repo skips the script itself — its detection patterns are literal strings in the source, so it cannot vet itself. Scanning your own copy returns PASS (with the expected doc-level findings).
+## Self-scan note
+
+Running vet-skill on its own repo skips the script itself — its detection
+patterns are literal strings in the source, so it cannot vet itself. Scanning
+your own copy returns PASS (with the expected doc-level findings).
